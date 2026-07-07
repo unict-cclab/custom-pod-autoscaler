@@ -1,0 +1,30 @@
+metric:
+  type: "shell"
+  timeout: 10000
+  shell:
+    entrypoint: "sh"
+    command:
+      - "-c"
+      - >-
+        python /metric.py
+        --prometheus_url "$PROMETHEUS_URL"
+        --target_response_time "$TARGET_RESPONSE_TIME"
+        --target_percentage "$TARGET_PERCENTAGE"
+        --time_range "$TIME_RANGE"
+evaluate:
+  type: "shell"
+  timeout: 10000
+  shell:
+    entrypoint: "sh"
+    command:
+      - "-c"
+      - >-
+        python /evaluate.py
+        --redis_host "$REDIS_HOST"
+        --kp "$KP"
+        --ki "$KI"
+        --kd "$KD"
+        --min_replicas "$MIN_REPLICAS"
+        --max_replicas "$MAX_REPLICAS"
+        --downscale_stabilization "$DOWNSCALE_STABILIZATION"
+runMode: "per-resource"
