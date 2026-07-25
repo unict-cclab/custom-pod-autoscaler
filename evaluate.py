@@ -34,26 +34,41 @@ def clamp_replicas(value, min_replicas, max_replicas):
     return max(min(value, max_replicas), min_replicas)
 
 
-def update_rps_per_replica_bounds(rps_per_replica, err, safe_rpspr, unsafe_rpspr):
+def update_rps_per_replica_bounds(
+    rps_per_replica,
+    response_time_error,
+    max_rps_per_replica_without_error,
+    min_rps_per_replica_with_error,
+):
     if rps_per_replica <= 0.0:
-        return safe_rpspr, unsafe_rpspr
+        return max_rps_per_replica_without_error, min_rps_per_replica_with_error
 
-    if err > 0.0:
-        if unsafe_rpspr <= 0.0 or rps_per_replica < unsafe_rpspr:
-            unsafe_rpspr = rps_per_replica
-            if safe_rpspr > 0.0 and safe_rpspr > unsafe_rpspr:
-                safe_rpspr = 0.0
+    if response_time_error > 0.0:
+        if min_rps_per_replica_with_error <= 0.0 or rps_per_replica < min_rps_per_replica_with_error:
+            min_rps_per_replica_with_error = rps_per_replica
+            if (
+                max_rps_per_replica_without_error > 0.0
+                and max_rps_per_replica_without_error > min_rps_per_replica_with_error
+            ):
+                max_rps_per_replica_without_error = 0.0
     else:
-        if safe_rpspr <= 0.0 or rps_per_replica > safe_rpspr:
-            safe_rpspr = rps_per_replica
-            if unsafe_rpspr > 0.0 and safe_rpspr > unsafe_rpspr:
-                unsafe_rpspr = 0.0
+        if max_rps_per_replica_without_error <= 0.0 or rps_per_replica > max_rps_per_replica_without_error:
+            max_rps_per_replica_without_error = rps_per_replica
+            if (
+                min_rps_per_replica_with_error > 0.0
+                and max_rps_per_replica_without_error > min_rps_per_replica_with_error
+            ):
+                min_rps_per_replica_with_error = 0.0
 
-    return safe_rpspr, unsafe_rpspr
+    return max_rps_per_replica_without_error, min_rps_per_replica_with_error
 
 
-def pid_delta(err, last_err, sum_err, kp, ki, kd):
-    output = kp * err + ki * sum_err + kd * (err - last_err)
+def pid_delta(response_time_error, previous_error, accumulated_error, kp, ki, kd):
+    output = (
+        kp * response_time_error
+        + ki * accumulated_error
+        + kd * (response_time_error - previous_error)
+    )
     if output > 0:
         return max(1, math.ceil(output))
     if output < 0:
@@ -61,16 +76,10 @@ def pid_delta(err, last_err, sum_err, kp, ki, kd):
     return 0
 
 
-def replicas_for_safe_rps(rps, safe_rpspr):
-    if rps <= 0.0 or safe_rpspr <= 0.0:
+def minimum_replicas_below_rps_limit(total_rps, rps_per_replica_limit):
+    if total_rps <= 0.0 or rps_per_replica_limit <= 0.0:
         return 0
-    return math.ceil(rps / safe_rpspr)
-
-
-def replicas_above_unsafe_rps(rps, unsafe_rpspr):
-    if rps <= 0.0 or unsafe_rpspr <= 0.0:
-        return 0
-    return math.floor(rps / unsafe_rpspr) + 1
+    return math.floor(total_rps / rps_per_replica_limit) + 1
 
 
 def evaluate(
@@ -102,15 +111,15 @@ def evaluate(
         logging.error(f"Invalid metric format: {e}")
         sys.exit(1)
 
-    rps = finite_number(metric_value.get("rps"), 0.0)
-    if rps < 0.0:
-        rps = 0.0
+    total_rps = finite_number(metric_value.get("rps"), 0.0)
+    if total_rps < 0.0:
+        total_rps = 0.0
 
-    err = finite_number(metric_value.get("error"), 0.0)
+    response_time_error = finite_number(metric_value.get("error"), 0.0)
 
-    avg_replicas = finite_number(metric_value.get("avg_replicas"), 1.0)
-    if avg_replicas <= 0.0:
-        avg_replicas = 1.0
+    average_replicas = finite_number(metric_value.get("avg_replicas"), 1.0)
+    if average_replicas <= 0.0:
+        average_replicas = 1.0
 
     try:
         r = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
@@ -121,10 +130,14 @@ def evaluate(
 
     try:
         target_replicas = int(finite_number(r.get(redis_key(group, app, "target_replicas")), min_replicas))
-        last_err = finite_number(r.get(redis_key(group, app, "last_err")), 0.0)
-        sum_err = finite_number(r.get(redis_key(group, app, "sum_err")), 0.0)
-        unsafe_rpspr = finite_number(r.get(redis_key(group, app, "min_rpspr_with_err")), 0.0)
-        safe_rpspr = finite_number(r.get(redis_key(group, app, "max_rpspr_without_err")), 0.0)
+        previous_error = finite_number(r.get(redis_key(group, app, "last_err")), 0.0)
+        accumulated_error = finite_number(r.get(redis_key(group, app, "sum_err")), 0.0)
+        min_rps_per_replica_with_error = finite_number(
+            r.get(redis_key(group, app, "min_rpspr_with_err")), 0.0
+        )
+        max_rps_per_replica_without_error = finite_number(
+            r.get(redis_key(group, app, "max_rpspr_without_err")), 0.0
+        )
         last_scale_timestamp = finite_number(r.get(redis_key(group, app, "last_scale_timestamp")), 0.0)
     except redis.RedisError as e:
         logging.error(f"Failed to read autoscaler state from Redis: {e}")
@@ -132,39 +145,52 @@ def evaluate(
 
     target_replicas = clamp_replicas(target_replicas, min_replicas, max_replicas)
     current_timestamp = time.time()
-    rps_per_replica = rps / avg_replicas
+    rps_per_replica = total_rps / average_replicas
 
-    safe_rpspr, unsafe_rpspr = update_rps_per_replica_bounds(
+    max_rps_per_replica_without_error, min_rps_per_replica_with_error = update_rps_per_replica_bounds(
         rps_per_replica,
-        err,
-        safe_rpspr,
-        unsafe_rpspr,
+        response_time_error,
+        max_rps_per_replica_without_error,
+        min_rps_per_replica_with_error,
     )
 
     if min_replicas < target_replicas < max_replicas:
-        sum_err += err
+        accumulated_error += response_time_error
 
-    delta_replicas = pid_delta(err, last_err, sum_err, kp, ki, kd)
+    replica_delta = pid_delta(
+        response_time_error,
+        previous_error,
+        accumulated_error,
+        kp,
+        ki,
+        kd,
+    )
 
-    if delta_replicas > 0:
-        pid_target = target_replicas + delta_replicas
-        safe_target = replicas_for_safe_rps(rps, safe_rpspr)
-        target_replicas = clamp_replicas(max(pid_target, safe_target), min_replicas, max_replicas)
+    if replica_delta > 0:
+        pid_target_replicas = target_replicas + replica_delta
+        target_replicas = clamp_replicas(pid_target_replicas, min_replicas, max_replicas)
         last_scale_timestamp = current_timestamp
-    elif delta_replicas < 0 and current_timestamp - last_scale_timestamp > downscale_stabilization:
-        pid_target = target_replicas + delta_replicas
-        unsafe_floor = replicas_above_unsafe_rps(rps, unsafe_rpspr)
-        target_replicas = clamp_replicas(max(pid_target, unsafe_floor), min_replicas, max_replicas)
+    elif replica_delta < 0 and current_timestamp - last_scale_timestamp > downscale_stabilization:
+        pid_target_replicas = target_replicas + replica_delta
+        minimum_safe_replicas = minimum_replicas_below_rps_limit(
+            total_rps,
+            min_rps_per_replica_with_error,
+        )
+        target_replicas = clamp_replicas(
+            max(pid_target_replicas, minimum_safe_replicas),
+            min_replicas,
+            max_replicas,
+        )
         last_scale_timestamp = current_timestamp
 
     try:
         r.set(redis_key(group, app, "target_replicas"), target_replicas)
-        r.set(redis_key(group, app, "last_err"), err)
-        r.set(redis_key(group, app, "sum_err"), sum_err)
-        r.set(redis_key(group, app, "min_rpspr_with_err"), unsafe_rpspr)
-        r.set(redis_key(group, app, "max_rpspr_without_err"), safe_rpspr)
+        r.set(redis_key(group, app, "last_err"), response_time_error)
+        r.set(redis_key(group, app, "sum_err"), accumulated_error)
+        r.set(redis_key(group, app, "min_rpspr_with_err"), min_rps_per_replica_with_error)
+        r.set(redis_key(group, app, "max_rpspr_without_err"), max_rps_per_replica_without_error)
         r.set(redis_key(group, app, "last_scale_timestamp"), last_scale_timestamp)
-        r.set(redis_key(group, app, "last_delta_replicas"), delta_replicas)
+        r.set(redis_key(group, app, "last_delta_replicas"), replica_delta)
     except redis.RedisError as e:
         logging.error(f"Failed to write autoscaler state to Redis: {e}")
         sys.exit(1)

@@ -26,107 +26,62 @@ def prom_query(prometheus_url, query):
 def prom_scalar(prometheus_url, query):
     results = prom_query(prometheus_url, query)
     value = float(results[0]["value"][1]) if results else 0.0
-    if math.isnan(value):
+    if not math.isfinite(value):
         return 0.0
     return value
 
 
-def app_label_slo_error(prometheus_url, app, app_label, reporter, target_response_time, target_percentage, time_range):
-    http_good_under_target_query = f"""
-        sum(
-            rate(
-                istio_request_duration_milliseconds_bucket{{
-                    connection_security_policy="mutual_tls",
-                    {app_label}="{app}",
-                    reporter="{reporter}",
-                    request_protocol!="grpc",
-                    response_code!~"5..",
-                    le="{target_response_time}"
-                }}[{time_range}]
+def app_label_response_time(prometheus_url, app, app_label, reporter, target_percentage, time_range):
+    query = f"""
+        histogram_quantile(
+            {target_percentage},
+            sum by (le) (
+                rate(
+                    istio_request_duration_milliseconds_bucket{{
+                        {app_label}="{app}",
+                        reporter="{reporter}",
+                        request_protocol!="grpc",
+                        response_code!~"5.."
+                    }}[{time_range}]
+                )
+                or
+                rate(
+                    istio_request_duration_milliseconds_bucket{{
+                        {app_label}="{app}",
+                        reporter="{reporter}",
+                        request_protocol="grpc",
+                        grpc_response_status="0"
+                    }}[{time_range}]
+                )
             )
         )
     """
-    http_good_total_query = f"""
-        sum(
-            rate(
-                istio_request_duration_milliseconds_count{{
-                    connection_security_policy="mutual_tls",
-                    {app_label}="{app}",
-                    reporter="{reporter}",
-                    request_protocol!="grpc",
-                    response_code!~"5.."
-                }}[{time_range}]
-            )
-        )
-    """
-    grpc_good_under_target_query = f"""
-        sum(
-            rate(
-                istio_request_duration_milliseconds_bucket{{
-                    connection_security_policy="mutual_tls",
-                    {app_label}="{app}",
-                    reporter="{reporter}",
-                    request_protocol="grpc",
-                    grpc_response_status="0",
-                    le="{target_response_time}"
-                }}[{time_range}]
-            )
-        )
-    """
-    grpc_good_total_query = f"""
-        sum(
-            rate(
-                istio_request_duration_milliseconds_count{{
-                    connection_security_policy="mutual_tls",
-                    {app_label}="{app}",
-                    reporter="{reporter}",
-                    request_protocol="grpc",
-                    grpc_response_status="0"
-                }}[{time_range}]
-            )
-        )
-    """
-
-    good_under_target = (
-        prom_scalar(prometheus_url, http_good_under_target_query)
-        + prom_scalar(prometheus_url, grpc_good_under_target_query)
-    )
-    good_total = (
-        prom_scalar(prometheus_url, http_good_total_query)
-        + prom_scalar(prometheus_url, grpc_good_total_query)
-    )
-    if good_total <= 0.0:
-        return 0.0
-
-    good_fraction = good_under_target / good_total
-    if math.isnan(good_fraction):
-        return 0.0
-    return target_percentage - good_fraction
+    return prom_scalar(prometheus_url, query)
 
 
-def slo_error(prometheus_url, app, target_response_time, target_percentage, time_range):
-    inbound_err = app_label_slo_error(
+def response_time_error(prometheus_url, app, target_response_time, target_percentage, time_range):
+    inbound_response_time = app_label_response_time(
         prometheus_url,
         app,
         "destination_app",
         "destination",
-        target_response_time,
         target_percentage,
         time_range,
     )
-    outbound_err = app_label_slo_error(
+    outbound_response_time = app_label_response_time(
         prometheus_url,
         app,
         "source_app",
         "source",
-        target_response_time,
         target_percentage,
         time_range,
     )
-    return inbound_err - max(0.0, outbound_err)
+    service_response_time = max(0.0, inbound_response_time - outbound_response_time)
+    error = (service_response_time - target_response_time) / target_response_time
+    return error, inbound_response_time, outbound_response_time, service_response_time
 
 
-def metrics(spec, prometheus_url, target_response_time, target_percentage, time_range, min_good_rps_for_error):
+def metrics(spec, prometheus_url, target_response_time, target_percentage, time_range, min_rps_for_error):
     try:
         labels = spec["resource"]["metadata"]["labels"]
     except KeyError:
@@ -146,8 +101,14 @@ def metrics(spec, prometheus_url, target_response_time, target_percentage, time_
     if math.isnan(rps):
         rps = 0.0
 
-    err = slo_error(prometheus_url, app, target_response_time, target_percentage, time_range)
-    if rps < min_good_rps_for_error:
+    err, inbound_response_time, outbound_response_time, service_response_time = response_time_error(
+        prometheus_url,
+        app,
+        target_response_time,
+        target_percentage,
+        time_range,
+    )
+    if rps < min_rps_for_error:
         err = min(0.0, err)
 
     query = f"""
@@ -166,25 +127,33 @@ def metrics(spec, prometheus_url, target_response_time, target_percentage, time_
     output = {
         "rps": rps,
         "error": err,
-        "avg_replicas": avg_replicas
+        "avg_replicas": avg_replicas,
+        "inbound_response_time": inbound_response_time,
+        "outbound_response_time": outbound_response_time,
+        "service_response_time": service_response_time,
     }
 
     print(json.dumps(output))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute SLO error metrics.")
+    parser = argparse.ArgumentParser(description="Compute response-time controller metrics.")
     parser.add_argument("--prometheus_url", required=True, help="Prometheus url.")
     parser.add_argument("--target_response_time", required=True, type=float, help="Target response time.")
-    parser.add_argument("--target_percentage", required=True, type=float, help="Target response time.")
+    parser.add_argument("--target_percentage", required=True, type=float, help="Target response-time percentile.")
     parser.add_argument("--time_range", required=True, help="Prometheus query range, e.g., '5m'.")
     parser.add_argument(
         "--min_good_rps_for_error",
         type=float,
         default=5.0,
-        help="Minimum successful request rate required before computing SLO error.",
+        help="Minimum request rate required before reporting a positive response-time error.",
     )
     args = parser.parse_args()
+
+    if args.target_response_time <= 0.0:
+        parser.error("--target_response_time must be greater than zero")
+    if not 0.0 < args.target_percentage < 1.0:
+        parser.error("--target_percentage must be between zero and one")
 
     try:
         spec = json.loads(sys.stdin.read())
