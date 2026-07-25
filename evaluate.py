@@ -168,20 +168,24 @@ def evaluate(
 
     if replica_delta > 0:
         pid_target_replicas = target_replicas + replica_delta
-        target_replicas = clamp_replicas(pid_target_replicas, min_replicas, max_replicas)
-        last_scale_timestamp = current_timestamp
+        next_target_replicas = clamp_replicas(pid_target_replicas, min_replicas, max_replicas)
+        if next_target_replicas != target_replicas:
+            target_replicas = next_target_replicas
+            last_scale_timestamp = current_timestamp
     elif replica_delta < 0 and current_timestamp - last_scale_timestamp > downscale_stabilization:
         pid_target_replicas = target_replicas + replica_delta
         minimum_safe_replicas = minimum_replicas_below_rps_limit(
             total_rps,
             min_rps_per_replica_with_error,
         )
-        target_replicas = clamp_replicas(
+        next_target_replicas = clamp_replicas(
             max(pid_target_replicas, minimum_safe_replicas),
             min_replicas,
             max_replicas,
         )
-        last_scale_timestamp = current_timestamp
+        if next_target_replicas != target_replicas:
+            target_replicas = next_target_replicas
+            last_scale_timestamp = current_timestamp
 
     try:
         r.set(redis_key(group, app, "target_replicas"), target_replicas)
