@@ -11,6 +11,7 @@ metric:
         --target_response_time "$TARGET_RESPONSE_TIME"
         --target_percentage "$TARGET_PERCENTAGE"
         --time_range "$TIME_RANGE"
+        --exclude_outbound_response_time "${EXCLUDE_OUTBOUND_RESPONSE_TIME:-false}"
 evaluate:
   type: "shell"
   timeout: 10000

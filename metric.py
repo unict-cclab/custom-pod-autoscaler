@@ -7,6 +7,16 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+
+def boolean(value):
+    normalized = value.lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected 'true' or 'false'")
+
+
 def get_label_value(labels, key):
     if key not in labels:
         logging.error(f"No '{key}' label on resource being managed")
@@ -59,7 +69,14 @@ def app_label_response_time(prometheus_url, app, app_label, reporter, target_per
     return prom_scalar(prometheus_url, query)
 
 
-def response_time_error(prometheus_url, app, target_response_time, target_percentage, time_range):
+def response_time_error(
+    prometheus_url,
+    app,
+    target_response_time,
+    target_percentage,
+    time_range,
+    exclude_outbound_response_time=False,
+):
     inbound_response_time = app_label_response_time(
         prometheus_url,
         app,
@@ -76,12 +93,22 @@ def response_time_error(prometheus_url, app, target_response_time, target_percen
         target_percentage,
         time_range,
     )
-    service_response_time = max(0.0, inbound_response_time - outbound_response_time)
+    service_response_time = max(0.0, inbound_response_time)
+    if not exclude_outbound_response_time:
+        service_response_time = max(0.0, inbound_response_time - outbound_response_time)
     error = (service_response_time - target_response_time) / target_response_time
     return error, inbound_response_time, outbound_response_time, service_response_time
 
 
-def metrics(spec, prometheus_url, target_response_time, target_percentage, time_range, min_rps_for_error):
+def metrics(
+    spec,
+    prometheus_url,
+    target_response_time,
+    target_percentage,
+    time_range,
+    min_rps_for_error,
+    exclude_outbound_response_time=False,
+):
     try:
         labels = spec["resource"]["metadata"]["labels"]
     except KeyError:
@@ -107,6 +134,7 @@ def metrics(spec, prometheus_url, target_response_time, target_percentage, time_
         target_response_time,
         target_percentage,
         time_range,
+        exclude_outbound_response_time,
     )
     if rps < min_rps_for_error:
         err = min(0.0, err)
@@ -143,6 +171,12 @@ def main():
     parser.add_argument("--target_percentage", required=True, type=float, help="Target response-time percentile.")
     parser.add_argument("--time_range", required=True, help="Prometheus query range, e.g., '5m'.")
     parser.add_argument(
+        "--exclude_outbound_response_time",
+        type=boolean,
+        default=False,
+        help="Ignore the outbound response-time percentile and use inbound response time directly (default: false).",
+    )
+    parser.add_argument(
         "--min_good_rps_for_error",
         type=float,
         default=5.0,
@@ -168,6 +202,7 @@ def main():
         args.target_percentage,
         args.time_range,
         args.min_good_rps_for_error,
+        args.exclude_outbound_response_time,
     )
 
 if __name__ == "__main__":

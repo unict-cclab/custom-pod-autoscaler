@@ -10,13 +10,22 @@ Metric and evaluation scripts used by the Custom Pod Autoscaler operator.
 | `TARGET_RESPONSE_TIME` | Target service response time in milliseconds |
 | `TARGET_PERCENTAGE` | Response-time percentile used by the controller |
 | `TIME_RANGE` | Prometheus query range |
+| `EXCLUDE_OUTBOUND_RESPONSE_TIME` | Whether to ignore outbound response time and use inbound response time directly; defaults to `false` |
 
-The metric script estimates a service's own response time as the difference
-between its inbound and outbound response-time percentiles:
+By default, the metric script retains the original behavior and estimates a
+service's own response time as the difference between its inbound and outbound
+response-time percentiles:
 
 ```text
 service_response_time = max(0, inbound_response_time - outbound_response_time)
 error = (service_response_time - target_response_time) / target_response_time
+```
+
+Set `EXCLUDE_OUTBOUND_RESPONSE_TIME=true` to exclude the outbound percentile
+from the calculation entirely:
+
+```text
+service_response_time = max(0, inbound_response_time)
 ```
 
 Only successful HTTP and gRPC requests contribute to the response-time
