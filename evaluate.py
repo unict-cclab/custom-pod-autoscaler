@@ -20,16 +20,6 @@ def redis_key(group, app, suffix):
     return f"{group}_{app}_{suffix}"
 
 
-def finite_number(value, default):
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(parsed):
-        return default
-    return parsed
-
-
 def clamp_replicas(value, min_replicas, max_replicas):
     return max(min(value, max_replicas), min_replicas)
 
@@ -46,10 +36,7 @@ def update_rps_per_replica_bounds(
     if response_time_error > 0.0:
         if min_rps_per_replica_with_error <= 0.0 or rps_per_replica < min_rps_per_replica_with_error:
             min_rps_per_replica_with_error = rps_per_replica
-            if (
-                max_rps_per_replica_without_error > 0.0
-                and max_rps_per_replica_without_error > min_rps_per_replica_with_error
-            ):
+            if max_rps_per_replica_without_error > min_rps_per_replica_with_error:
                 max_rps_per_replica_without_error = 0.0
     else:
         if max_rps_per_replica_without_error <= 0.0 or rps_per_replica > max_rps_per_replica_without_error:
@@ -70,9 +57,9 @@ def pid_delta(response_time_error, previous_error, accumulated_error, kp, ki, kd
         + kd * (response_time_error - previous_error)
     )
     if output > 0:
-        return max(1, math.ceil(output))
+        return math.ceil(output)
     if output < 0:
-        return min(-1, math.floor(output))
+        return math.floor(output)
     return 0
 
 
@@ -111,13 +98,13 @@ def evaluate(
         logging.error(f"Invalid metric format: {e}")
         sys.exit(1)
 
-    total_rps = finite_number(metric_value.get("rps"), 0.0)
+    total_rps = float(metric_value.get("rps", 0.0))
     if total_rps < 0.0:
         total_rps = 0.0
 
-    response_time_error = finite_number(metric_value.get("error"), 0.0)
+    response_time_error = float(metric_value.get("error", 0.0))
 
-    average_replicas = finite_number(metric_value.get("avg_replicas"), 1.0)
+    average_replicas = float(metric_value.get("avg_replicas", 1.0))
     if average_replicas <= 0.0:
         average_replicas = 1.0
 
@@ -129,16 +116,16 @@ def evaluate(
         sys.exit(1)
 
     try:
-        target_replicas = int(finite_number(r.get(redis_key(group, app, "target_replicas")), min_replicas))
-        previous_error = finite_number(r.get(redis_key(group, app, "last_err")), 0.0)
-        accumulated_error = finite_number(r.get(redis_key(group, app, "sum_err")), 0.0)
-        min_rps_per_replica_with_error = finite_number(
-            r.get(redis_key(group, app, "min_rpspr_with_err")), 0.0
+        target_replicas = int(r.get(redis_key(group, app, "target_replicas")) or min_replicas)
+        previous_error = float(r.get(redis_key(group, app, "last_err")) or 0.0)
+        accumulated_error = float(r.get(redis_key(group, app, "sum_err")) or 0.0)
+        min_rps_per_replica_with_error = float(
+            r.get(redis_key(group, app, "min_rpspr_with_err")) or 0.0
         )
-        max_rps_per_replica_without_error = finite_number(
-            r.get(redis_key(group, app, "max_rpspr_without_err")), 0.0
+        max_rps_per_replica_without_error = float(
+            r.get(redis_key(group, app, "max_rpspr_without_err")) or 0.0
         )
-        last_scale_timestamp = finite_number(r.get(redis_key(group, app, "last_scale_timestamp")), 0.0)
+        last_scale_timestamp = float(r.get(redis_key(group, app, "last_scale_timestamp")) or 0.0)
     except redis.RedisError as e:
         logging.error(f"Failed to read autoscaler state from Redis: {e}")
         sys.exit(1)
@@ -199,9 +186,7 @@ def evaluate(
         logging.error(f"Failed to write autoscaler state to Redis: {e}")
         sys.exit(1)
 
-    evaluation = {"targetReplicas": target_replicas}
-
-    print(json.dumps(evaluation))
+    print(json.dumps({"targetReplicas": target_replicas}))
 
 
 def main():
