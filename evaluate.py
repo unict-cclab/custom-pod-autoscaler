@@ -63,6 +63,14 @@ def pid_delta(response_time_error, previous_error, accumulated_error, kp, ki, kd
     return 0
 
 
+def should_accumulate_error(response_time_error, target_replicas, min_replicas, max_replicas):
+    return (
+        min_replicas < target_replicas < max_replicas
+        or target_replicas == max_replicas and response_time_error < 0.0
+        or target_replicas == min_replicas and response_time_error > 0.0
+    )
+
+
 def minimum_replicas_below_rps_limit(total_rps, rps_per_replica_limit):
     if total_rps <= 0.0 or rps_per_replica_limit <= 0.0:
         return 0
@@ -141,7 +149,12 @@ def evaluate(
         min_rps_per_replica_with_error,
     )
 
-    if min_replicas < target_replicas < max_replicas:
+    if should_accumulate_error(
+        response_time_error,
+        target_replicas,
+        min_replicas,
+        max_replicas,
+    ):
         accumulated_error += response_time_error
 
     replica_delta = pid_delta(
