@@ -18,7 +18,7 @@ response-time percentiles:
 
 ```text
 service_response_time = max(0, inbound_response_time - outbound_response_time)
-error = (service_response_time - target_response_time) / target_response_time
+err = (service_response_time - target_response_time) / target_response_time
 ```
 
 Set `EXCLUDE_OUTBOUND_RESPONSE_TIME=true` to exclude the outbound percentile
@@ -35,7 +35,9 @@ controller's response-time objective.
 Upscaling is driven only by the PID response-time error. The evaluator also
 learns the maximum RPS per replica observed without error and the minimum RPS
 per replica observed with error. The unsafe bound limits downscaling; a later
-safe observation above it invalidates the stale bound.
+contradictory observation moves the opposite bound by the configured margin.
+The safe bound caps every PID upscale; during a positive error, the cap still
+allows at least one additional replica.
 
 ## Evaluation parameters
 
@@ -46,6 +48,7 @@ safe observation above it invalidates the stale bound.
 | `MIN_REPLICAS` | Minimum replicas |
 | `MAX_REPLICAS` | Maximum replicas |
 | `DOWNSCALE_STABILIZATION` | Downscale stabilization period |
+| `MARGIN_RATIO` | Fractional margin between RPS-per-replica bounds in `(0, 1)`; defaults to `0.1` |
 
 [`config.yaml`](config.yaml) maps these variables to `metric.py` and
 `evaluate.py`. Both scripts read the autoscaler request as JSON from stdin and

@@ -28,4 +28,5 @@ evaluate:
         --min_replicas "$MIN_REPLICAS"
         --max_replicas "$MAX_REPLICAS"
         --downscale_stabilization "$DOWNSCALE_STABILIZATION"
+        --margin_ratio "${MARGIN_RATIO:-0.1}"
 runMode: "per-resource"

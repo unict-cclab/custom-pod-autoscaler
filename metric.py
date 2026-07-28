@@ -129,18 +129,18 @@ def metrics(
 
     query = f"""
         avg_over_time(
-        kube_deployment_status_replicas{{
+        kube_deployment_status_replicas_ready{{
             deployment="{app}"
         }}[{time_range}]
         )
     """
 
-    avg_replicas = prom_scalar(prometheus_url, query)
+    avg_ready_replicas = prom_scalar(prometheus_url, query)
 
     output = {
         "rps": rps,
-        "error": err,
-        "avg_replicas": avg_replicas,
+        "err": err,
+        "avg_ready_replicas": avg_ready_replicas,
         "inbound_response_time": inbound_response_time,
         "outbound_response_time": outbound_response_time,
         "service_response_time": service_response_time,
