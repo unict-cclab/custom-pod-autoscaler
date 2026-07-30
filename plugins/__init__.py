@@ -1,0 +1,1 @@
+"""Autoscaler plugin namespace."""

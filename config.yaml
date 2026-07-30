@@ -2,31 +2,20 @@ metric:
   type: "shell"
   timeout: 10000
   shell:
-    entrypoint: "sh"
+    entrypoint: "python"
     command:
-      - "-c"
-      - >-
-        python /metric.py
-        --prometheus_url "$PROMETHEUS_URL"
-        --target_response_time "$TARGET_RESPONSE_TIME"
-        --target_percentage "$TARGET_PERCENTAGE"
-        --time_range "$TIME_RANGE"
-        --exclude_outbound_response_time "${EXCLUDE_OUTBOUND_RESPONSE_TIME:-false}"
+      - "/run_plugin.py"
+      - "metric"
+      - "--config"
+      - "/etc/custom-pod-autoscaler/config.json"
 evaluate:
   type: "shell"
   timeout: 10000
   shell:
-    entrypoint: "sh"
+    entrypoint: "python"
     command:
-      - "-c"
-      - >-
-        python /evaluate.py
-        --redis_host "$REDIS_HOST"
-        --kp "$KP"
-        --ki "$KI"
-        --kd "$KD"
-        --min_replicas "$MIN_REPLICAS"
-        --max_replicas "$MAX_REPLICAS"
-        --downscale_stabilization "$DOWNSCALE_STABILIZATION"
-        --margin_ratio "${MARGIN_RATIO:-0.1}"
+      - "/run_plugin.py"
+      - "evaluate"
+      - "--config"
+      - "/etc/custom-pod-autoscaler/config.json"
 runMode: "per-resource"
